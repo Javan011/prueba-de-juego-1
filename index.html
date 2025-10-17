@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Cloudy Bird</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d0d0f;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,"Helvetica Neue",Arial;}
+  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{display:block;touch-action:none}
+  .hud{
+    position:fixed;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;
+    padding:10px 16px;color:#fff;font-weight:700;mix-blend:screen;text-shadow:0 2px 8px rgba(0,0,0,.45)
+  }
+  .badge{border-radius:999px;padding:6px 12px;background:rgba(255,255,255,.12);backdrop-filter:blur(6px)}
+  .center{
+    position:fixed;inset:0;display:grid;place-items:center;pointer-events:none;color:#fff;text-align:center
+  }
+  .btn{
+    pointer-events:auto;margin-top:14px;display:inline-block;padding:10px 16px;border-radius:12px;font-weight:800;letter-spacing:.3px;
+    background:linear-gradient(135deg,#ffe000,#ff7a00);color:#1a1200;box-shadow:0 10px 30px rgba(255,140,0,.35);cursor:pointer;border:none
+  }
+  .small{opacity:.85;font-weight:600}
+</style>
+</head>
+<body>
+<div class="hud">
+  <div class="badge">Puntuación: <span id="score">0</span></div>
+  <div class="badge">Récord: <span id="best">0</span></div>
+</div>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div class="center" id="overlay">
+  <div>
+    <h1 style="margin:0 0 8px;font-size:36px">🌈 Cloudy Bird</h1>
+    <div class="small">Toque o click para saltar. Evita las nubes.</div>
+    <button class="btn" id="playBtn">Jugar</button>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const overlay = document.getElementById('overlay');
+  const playBtn = document.getElementById('playBtn');
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best');
+
+  // Escala HiDPI y resize
+  const state = { w: 0, h: 0, dpr: Math.min(2, window.devicePixelRatio || 1) };
+  const resize = () => {
+    state.w = window.innerWidth;
+    state.h = window.innerHeight;
+    canvas.width  = Math.floor(state.w * state.dpr);
+    canvas.height = Math.floor(state.h * state.dpr);
+    canvas.style.width  = state.w + 'px';
+    canvas.style.height = state.h + 'px';
+    ctx.setTransform(state.dpr,0,0,state.dpr,0,0);
+  };
+  window.addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // --------- Utilidades visuales ---------
+  const rand = (a,b)=>a+Math.random()*(b-a);
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  const lerp=(a,b,t)=>a+(b-a)*t;
+
+  // Fondo degradado móvil
+  let hue = 200;
+  function drawSky() {
+    hue = (hue + 0.05) % 360;
+    const g = ctx.createLinearGradient(0,0,0,state.h);
+    g.addColorStop(0, `hsl(${(hue+30)%360},90%,60%)`);
+    g.addColorStop(1, `hsl(${(hue+300)%360},90%,50%)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,state.w,state.h);
+    // estrellas suaves
+    ctx.globalAlpha = 0.15;
+    for (let i=0;i<40;i++){
+      const x = (i*97 + (Date.now()/40))%state.w;
+      const y = (i*53)%state.h*0.7;
+      ctx.beginPath(); ctx.arc(x,y,1.5,0,Math.PI*2); ctx.fillStyle="#fff"; ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // --------- Entidades ---------
+  const GAME = { READY:0, PLAY:1, DEAD:2 };
+  let gameState = GAME.READY;
+
+  const bird = {
+    x: 0, y: 0, r: 18,
+    vy: 0,
+    gravity: 1400,    // px/s^2
+    jumpV: -380,      // impulso
+    tilt: 0,
+    colors: ['#ffeb3b','#ff9800','#ff4081','#7c4dff']
+  };
+
+  // Par de nubes (arriba/abajo) con un hueco central
+  const clouds = [];
+  const cfg = {
+    gap: 180,             // hueco inicial
+    minGap: 130,
+    speed: 180,           // px/s
+    speedMax: 360,
+    spawnEvery: 1.35,     // s
+    spawnTimer: 0,
+    thickness: 90,        // “altura” de la nube desde el borde hacia el hueco
+  };
+
+  let score = 0;
+  let best = Number(localStorage.getItem('cloudy_best')||0);
+  bestEl.textContent = best;
+
+  function reset() {
+    score=0; scoreEl.textContent=0;
+    clouds.length=0;
+    bird.x = state.w*0.28;
+    bird.y = state.h*0.45;
+    bird.vy = 0;
+    cfg.gap = 180;
+    cfg.speed = 180;
+    cfg.spawnEvery = 1.35;
+    cfg.spawnTimer = 0;
+  }
+
+  // Dibujo del pájaro (colorido)
+  function drawBird(dt) {
+    // cuerpo
+    const t = Date.now()/400;
+    const color = bird.colors[Math.floor(t)%bird.colors.length];
+    ctx.save();
+    ctx.translate(bird.x, bird.y);
+    ctx.rotate(bird.tilt);
+    // ala (latido)
+    const flap = Math.sin(Date.now()/120)*6;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.ellipse(0,0,20,16,0,0,Math.PI*2); ctx.fill();
+
+    // ojo
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(6,-4,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#111';
+    ctx.beginPath(); ctx.arc(7,-4,2,0,Math.PI*2); ctx.fill();
+
+    // pico
+    ctx.fillStyle = '#ffdd00';
+    ctx.beginPath(); ctx.moveTo(18,0); ctx.lineTo(30,4); ctx.lineTo(18,8); ctx.closePath(); ctx.fill();
+
+    // ala
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.beginPath();
+    ctx.ellipse(-6,2+flap,12,8,0,0,Math.PI*2); ctx.fill();
+
+    ctx.restore();
+  }
+
+  // Dibujo estilizado de nube como “borde” superior/inferior
+  function drawCloudBand(y, height, seed) {
+    ctx.save();
+    ctx.translate(0,y);
+    // base
+    const grad = ctx.createLinearGradient(0,0,0,height);
+    grad.addColorStop(0,'rgba(255,255,255,.95)');
+    grad.addColorStop(1,'rgba(255,255,255,.75)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,state.w,height);
+
+    // burbujas
+    const rnd = (i)=> Math.sin(i*999+seed)*0.5+0.5;
+    for (let i=0;i<10;i++){
+      const ww = 120 + rnd(i)*140;
+      const xx = (i*state.w/8 + (seed*73)%state.w) % state.w;
+      const yy = height*0.25 + rnd(i+2)*height*0.4;
+      ctx.beginPath();
+      ctx.arc(xx, yy, ww*0.35, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(255,255,255,.85)';
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Obstáculos: cada item es { x, gapY, passed }
+  function spawnCloud() {
+    const margin = 80;
+    const gapY = rand(margin, state.h - margin - cfg.gap);
+    clouds.push({ x: state.w + 40, gapY, passed:false, seed: Math.random()*1000 });
+  }
+
+  function updateClouds(dt) {
+    cfg.spawnTimer += dt;
+    if (cfg.spawnTimer >= cfg.spawnEvery) {
+      cfg.spawnTimer = 0;
+      spawnCloud();
+    }
+    const spd = cfg.speed;
+    for (const c of clouds) c.x -= spd * dt;
+    while (clouds.length && clouds[0].x < -240) clouds.shift();
+  }
+
+  function drawClouds() {
+    for (const c of clouds) {
+      // parte superior
+      ctx.save();
+      ctx.translate(c.x,0);
+      drawCloudBand(0, c.gapY, c.seed);
+      drawCloudBand(c.gapY + cfg.gap, state.h - (c.gapY + cfg.gap), c.seed+5);
+      ctx.restore();
+    }
+  }
+
+  // Colisión: aproximamos nubes a dos rectángulos (top/bottom)
+  function checkCollision() {
+    const bx = bird.x, by = bird.y, br = bird.r;
+    // límites pantalla
+    if (by - br < 0 || by + br > state.h) return true;
+    for (const c of clouds) {
+      const topRect = { x:c.x, y:0, w:state.w, h:c.gapY };
+      const botRect = { x:c.x, y:c.gapY + cfg.gap, w:state.w, h:state.h - (c.gapY+cfg.gap) };
+      if (circleRect(bx,by,br, topRect) || circleRect(bx,by,br, botRect)) return true;
+
+      // puntuación al pasar el centro del par
+      if (!c.passed && c.x + 40 < bird.x) {
+        c.passed = true;
+        addScore();
+      }
+    }
+    return false;
+  }
+
+  function circleRect(cx,cy,r,rect){
+    const nx = clamp(cx, rect.x, rect.x+rect.w);
+    const ny = clamp(cy, rect.y, rect.y+rect.h);
+    const dx = cx - nx, dy = cy - ny;
+    return (dx*dx + dy*dy) <= r*r;
+  }
+
+  function addScore(){
+    score++;
+    scoreEl.textContent = score;
+    // ligera subida de dificultad por puntos
+    cfg.speed    = clamp(cfg.speed + 4, cfg.speed, cfg.speedMax);
+    cfg.gap      = Math.max(cfg.minGap, cfg.gap - 1.2);
+    cfg.spawnEvery = Math.max(0.95, cfg.spawnEvery - 0.008);
+    pulseHUD();
+  }
+
+  function pulseHUD(){
+    const hud = document.querySelector('.hud');
+    hud.style.transition='transform .08s ease';
+    hud.style.transform='scale(1.04)';
+    setTimeout(()=>{hud.style.transform='scale(1)';},80);
+  }
+
+  // Entrada: click o touch = salto
+  function jump(){
+    if (gameState === GAME.READY) {
+      startGame();
+      return;
+    }
+    if (gameState === GAME.DEAD) return;
+    bird.vy = bird.jumpV;
+  }
+
+  // Bloquear doble tap zoom/scroll
+  ['touchstart','touchmove','gesturestart'].forEach(ev=>{
+    window.addEventListener(ev, e=> e.preventDefault(), {passive:false});
+  });
+
+  window.addEventListener('mousedown', e=> { if (e.button===0) jump(); });
+  window.addEventListener('touchstart', jump, {passive:false});
+  playBtn.addEventListener('click', ()=> startGame());
+
+  function startGame(){
+    overlay.style.display='none';
+    reset();
+    gameState = GAME.PLAY;
+  }
+
+  function gameOver(){
+    gameState = GAME.DEAD;
+    if (score > best) {
+      best = score;
+      localStorage.setItem('cloudy_best', String(best));
+      bestEl.textContent = best;
+    }
+    // mostrar overlay con CTA reinicio
+    overlay.innerHTML = `
+      <div>
+        <h1 style="margin:0 0 8px;font-size:36px">🚫 ¡Has tocado una nube!</h1>
+        <div class="small" style="margin-bottom:6px">Puntuación: <b>${score}</b> · Récord: <b>${best}</b></div>
+        ${ medalHTML(score) }
+        <button class="btn" id="again">Reintentar</button><br/>
+        <div class="small" style="margin-top:10px;opacity:.8">Consejo: haz saltos cortos y rítmicos; evita sobrecorregir.</div>
+      </div>
+    `;
+    overlay.style.display='grid';
+    document.getElementById('again').addEventListener('click', ()=>{
+      overlay.innerHTML = `
+        <div>
+          <h1 style="margin:0 0 8px;font-size:36px">🌈 Cloudy Bird</h1>
+          <div class="small">Toque o click para saltar. Evita las nubes.</div>
+          <button class="btn" id="playBtn">Jugar</button>
+        </div>
+      `;
+      document.getElementById('playBtn').addEventListener('click', ()=> startGame());
+    });
+  }
+
+  function medalHTML(s){
+    if (s>=40) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#ffd700,#ffb300)">🥇 Oro · Crack</div>`;
+    if (s>=25) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#c0c0c0,#a0a0a0)">🥈 Plata · Muy bien</div>`;
+    if (s>=10) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#cd7f32,#9c5e24)">🥉 Bronce · Sigue!</div>`;
+    return `<div class="badge" style="margin:8px auto;display:inline-block">🎯 Calentando</div>`;
+  }
+
+  // Bucle principal
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.033, (now - last)/1000); // cap 30ms
+    last = now;
+
+    drawSky();
+
+    if (gameState === GAME.PLAY) {
+      // física pájaro
+      bird.vy += bird.gravity * dt;
+      bird.y  += bird.vy * dt;
+      bird.tilt = lerp(bird.tilt, clamp(bird.vy/800, -0.5, 0.7), 0.2);
+
+      updateClouds(dt);
+
+      if (checkCollision()) gameOver();
+    }
+
+    drawClouds();
+    drawBird(dt);
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // Arranque
+  reset();
+
+})();
+</script>
+</body>
+</html>
