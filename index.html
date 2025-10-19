@@ -3,347 +3,297 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-<title>Cloudy Bird</title>
+<title>Cosmos Jump</title>
 <style>
-  html,body{margin:0;height:100%;background:#0d0d0f;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,"Helvetica Neue",Arial;}
-  #wrap{position:fixed;inset:0;display:grid;place-items:center}
+  html,body{margin:0;height:100%;background:#060915;overflow:hidden;font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,Ubuntu,"Helvetica Neue",Arial}
   canvas{display:block;touch-action:none}
-  .hud{
-    position:fixed;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;
-    padding:10px 16px;color:#fff;font-weight:700;mix-blend:screen;text-shadow:0 2px 8px rgba(0,0,0,.45)
-  }
-  .badge{border-radius:999px;padding:6px 12px;background:rgba(255,255,255,.12);backdrop-filter:blur(6px)}
-  .center{
-    position:fixed;inset:0;display:grid;place-items:center;pointer-events:none;color:#fff;text-align:center
-  }
-  .btn{
-    pointer-events:auto;margin-top:14px;display:inline-block;padding:10px 16px;border-radius:12px;font-weight:800;letter-spacing:.3px;
-    background:linear-gradient(135deg,#ffe000,#ff7a00);color:#1a1200;box-shadow:0 10px 30px rgba(255,140,0,.35);cursor:pointer;border:none
-  }
-  .small{opacity:.85;font-weight:600}
+  .hud{position:fixed;left:0;right:0;top:0;display:flex;justify-content:space-between;align-items:center;padding:10px 16px;color:#eaf6ff;font-weight:800;text-shadow:0 2px 8px rgba(0,0,0,.55)}
+  .pill{border-radius:999px;padding:6px 12px;background:rgba(255,255,255,.10);backdrop-filter:blur(6px)}
+  .overlay{position:fixed;inset:0;display:grid;place-items:center;color:#eaf6ff;text-align:center}
+  .btn{pointer-events:auto;margin-top:12px;display:inline-block;padding:10px 16px;border-radius:12px;font-weight:800;letter-spacing:.3px;background:linear-gradient(135deg,#00e1ff,#7b61ff);color:#071019;box-shadow:0 10px 30px rgba(79,70,229,.35);cursor:pointer;border:none}
+  .small{opacity:.85;font-weight:700}
 </style>
 </head>
 <body>
 <div class="hud">
-  <div class="badge">Puntuación: <span id="score">0</span></div>
-  <div class="badge">Récord: <span id="best">0</span></div>
+  <div class="pill">Puntos: <span id="score">0</span></div>
+  <div class="pill">Récord: <span id="best">0</span></div>
 </div>
-<div id="wrap"><canvas id="game"></canvas></div>
-<div class="center" id="overlay">
+<canvas id="game"></canvas>
+<div id="ovl" class="overlay">
   <div>
-    <h1 style="margin:0 0 8px;font-size:36px">🌈 Cloudy Bird</h1>
-    <div class="small">Toque o click para saltar. Evita las nubes.</div>
-    <button class="btn" id="playBtn">Jugar</button>
+    <h1 style="margin:0 0 8px">🚀 COSMOS JUMP</h1>
+    <div class="small">Click/Tap o <kbd>Espacio</kbd> para **saltar** (doble salto disponible). Esquiva meteoros y recoge orbes.</div>
+    <button id="play" class="btn">Jugar</button>
   </div>
 </div>
+
 <script>
 (() => {
-  const canvas = document.getElementById('game');
-  const ctx = canvas.getContext('2d');
-  const overlay = document.getElementById('overlay');
-  const playBtn = document.getElementById('playBtn');
-  const scoreEl = document.getElementById('score');
-  const bestEl  = document.getElementById('best');
+  // ===== Config (ajusta aquí si cambias tu sprite) =====
+  const HERO_SRC    = "./assets/cosmos_run.png"; // tira horizontal PNG
+  const HERO_FRAMES = 8;     // nº de frames en la tira
+  const HERO_FPS    = 12;    // velocidad animación carrera
 
-  // Escala HiDPI y resize
-  const state = { w: 0, h: 0, dpr: Math.min(2, window.devicePixelRatio || 1) };
-  const resize = () => {
-    state.w = window.innerWidth;
-    state.h = window.innerHeight;
-    canvas.width  = Math.floor(state.w * state.dpr);
-    canvas.height = Math.floor(state.h * state.dpr);
-    canvas.style.width  = state.w + 'px';
-    canvas.style.height = state.h + 'px';
-    ctx.setTransform(state.dpr,0,0,state.dpr,0,0);
-  };
-  window.addEventListener('resize', resize, {passive:true});
-  resize();
+  // Física / juego
+  const GROUND_H     = 110;  // suelo lunar
+  const GRAVITY      = 2500;
+  const JUMP_VY      = -960;
+  const DOUBLE_JUMP  = true;
+  const BASE_SPEED   = 340;
+  const MAX_SPEED    = 760;
+  const ORB_SCORE    = 3;
 
-  // --------- Utilidades visuales ---------
-  const rand = (a,b)=>a+Math.random()*(b-a);
-  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-  const lerp=(a,b,t)=>a+(b-a)*t;
+  // Canvas
+  const cvs = document.getElementById('game');
+  const ctx = cvs.getContext('2d');
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  let W=0,H=0;
+  function resize(){
+    W=innerWidth; H=innerHeight;
+    cvs.width=Math.floor(W*dpr); cvs.height=Math.floor(H*dpr);
+    cvs.style.width=W+'px'; cvs.style.height=H+'px';
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  addEventListener('resize', resize, {passive:true}); resize();
 
-  // Fondo degradado móvil
-  let hue = 200;
-  function drawSky() {
-    hue = (hue + 0.05) % 360;
-    const g = ctx.createLinearGradient(0,0,0,state.h);
-    g.addColorStop(0, `hsl(${(hue+30)%360},90%,60%)`);
-    g.addColorStop(1, `hsl(${(hue+300)%360},90%,50%)`);
-    ctx.fillStyle = g;
-    ctx.fillRect(0,0,state.w,state.h);
-    // estrellas suaves
-    ctx.globalAlpha = 0.15;
-    for (let i=0;i<40;i++){
-      const x = (i*97 + (Date.now()/40))%state.w;
-      const y = (i*53)%state.h*0.7;
-      ctx.beginPath(); ctx.arc(x,y,1.5,0,Math.PI*2); ctx.fillStyle="#fff"; ctx.fill();
+  // Estado
+  const GAME={READY:0,PLAY:1,DEAD:2}; let gameState=GAME.READY;
+  let score=0, best=Number(localStorage.getItem('cosmos_best')||0);
+  document.getElementById('best').textContent=best;
+
+  // Héroe (astronauta)
+  const heroImg=new Image(); heroImg.src=HERO_SRC;
+  const hero={x:0,y:0,w:64,h:64,vy:0,onGround:true,jumps:0,frame:0,ft:0,scale:1.0};
+
+  // Mundo
+  let hue=205, speed=BASE_SPEED;
+  const meteors=[]; // {x,y,w,h,rot,speedR,type,passed}
+  const orbs=[];    // {x,y,r,taken,t}
+  let mTimer=0, oTimer=0;
+
+  function gndY(){ return H-GROUND_H; }
+
+  function reset(){
+    score=0; document.getElementById('score').textContent=0;
+    speed=BASE_SPEED; meteors.length=0; orbs.length=0; mTimer=0; oTimer=0;
+
+    hero.w=Math.min(120,Math.max(60,Math.floor(W*0.085)));
+    hero.h=hero.w*1.0;
+    hero.x=W*0.22; hero.y=gndY()-hero.h/2;
+    hero.vy=0; hero.onGround=true; hero.jumps=0; hero.frame=0; hero.ft=0;
+  }
+
+  // Controles
+  function jump(){
+    if (gameState===GAME.READY){ start(); return; }
+    if (gameState!==GAME.PLAY) return;
+    if (hero.onGround || (DOUBLE_JUMP && hero.jumps<2)){
+      hero.vy=JUMP_VY; hero.onGround=false; hero.jumps++;
     }
-    ctx.globalAlpha = 1;
   }
+  addEventListener('mousedown', e=>{ if(e.button===0) jump(); });
+  addEventListener('touchstart', e=>{ e.preventDefault(); jump(); }, {passive:false});
+  addEventListener('keydown', e=>{ if(e.code==='Space'){ e.preventDefault(); jump(); }});
 
-  // --------- Entidades ---------
-  const GAME = { READY:0, PLAY:1, DEAD:2 };
-  let gameState = GAME.READY;
+  const ovl=document.getElementById('ovl');
+  document.getElementById('play').addEventListener('click', start);
+  function start(){ ovl.style.display='none'; reset(); gameState=GAME.PLAY; }
 
-  const bird = {
-    x: 0, y: 0, r: 18,
-    vy: 0,
-    gravity: 1400,    // px/s^2
-    jumpV: -380,      // impulso
-    tilt: 0,
-    colors: ['#ffeb3b','#ff9800','#ff4081','#7c4dff']
-  };
-
-  // Par de nubes (arriba/abajo) con un hueco central
-  const clouds = [];
-  const cfg = {
-    gap: 180,             // hueco inicial
-    minGap: 130,
-    speed: 180,           // px/s
-    speedMax: 360,
-    spawnEvery: 1.35,     // s
-    spawnTimer: 0,
-    thickness: 90,        // “altura” de la nube desde el borde hacia el hueco
-  };
-
-  let score = 0;
-  let best = Number(localStorage.getItem('cloudy_best')||0);
-  bestEl.textContent = best;
-
-  function reset() {
-    score=0; scoreEl.textContent=0;
-    clouds.length=0;
-    bird.x = state.w*0.28;
-    bird.y = state.h*0.45;
-    bird.vy = 0;
-    cfg.gap = 180;
-    cfg.speed = 180;
-    cfg.spawnEvery = 1.35;
-    cfg.spawnTimer = 0;
+  // Spawns
+  function spawnMeteor(){
+    const t=Math.random();
+    const size = t<0.5 ? 48 : t<0.8 ? 70 : 100;
+    const w=size, h=size;
+    const x=W+rand(0,120), y=gndY()-h;
+    meteors.push({x,y,w,h,rot:rand(0,Math.PI*2),speedR:rand(-3,3),type:'rock',passed:false});
   }
-
-  // Dibujo del pájaro (colorido)
-  function drawBird(dt) {
-    // cuerpo
-    const t = Date.now()/400;
-    const color = bird.colors[Math.floor(t)%bird.colors.length];
-    ctx.save();
-    ctx.translate(bird.x, bird.y);
-    ctx.rotate(bird.tilt);
-    // ala (latido)
-    const flap = Math.sin(Date.now()/120)*6;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.ellipse(0,0,20,16,0,0,Math.PI*2); ctx.fill();
-
-    // ojo
-    ctx.fillStyle = '#fff';
-    ctx.beginPath(); ctx.arc(6,-4,5,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#111';
-    ctx.beginPath(); ctx.arc(7,-4,2,0,Math.PI*2); ctx.fill();
-
-    // pico
-    ctx.fillStyle = '#ffdd00';
-    ctx.beginPath(); ctx.moveTo(18,0); ctx.lineTo(30,4); ctx.lineTo(18,8); ctx.closePath(); ctx.fill();
-
-    // ala
-    ctx.fillStyle = 'rgba(255,255,255,.85)';
-    ctx.beginPath();
-    ctx.ellipse(-6,2+flap,12,8,0,0,Math.PI*2); ctx.fill();
-
-    ctx.restore();
-  }
-
-  // Dibujo estilizado de nube como “borde” superior/inferior
-  function drawCloudBand(y, height, seed) {
-    ctx.save();
-    ctx.translate(0,y);
-    // base
-    const grad = ctx.createLinearGradient(0,0,0,height);
-    grad.addColorStop(0,'rgba(255,255,255,.95)');
-    grad.addColorStop(1,'rgba(255,255,255,.75)');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0,0,state.w,height);
-
-    // burbujas
-    const rnd = (i)=> Math.sin(i*999+seed)*0.5+0.5;
-    for (let i=0;i<10;i++){
-      const ww = 120 + rnd(i)*140;
-      const xx = (i*state.w/8 + (seed*73)%state.w) % state.w;
-      const yy = height*0.25 + rnd(i+2)*height*0.4;
-      ctx.beginPath();
-      ctx.arc(xx, yy, ww*0.35, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(255,255,255,.85)';
-      ctx.fill();
-    }
-    ctx.restore();
-  }
-
-  // Obstáculos: cada item es { x, gapY, passed }
-  function spawnCloud() {
-    const margin = 80;
-    const gapY = rand(margin, state.h - margin - cfg.gap);
-    clouds.push({ x: state.w + 40, gapY, passed:false, seed: Math.random()*1000 });
-  }
-
-  function updateClouds(dt) {
-    cfg.spawnTimer += dt;
-    if (cfg.spawnTimer >= cfg.spawnEvery) {
-      cfg.spawnTimer = 0;
-      spawnCloud();
-    }
-    const spd = cfg.speed;
-    for (const c of clouds) c.x -= spd * dt;
-    while (clouds.length && clouds[0].x < -240) clouds.shift();
-  }
-
-  function drawClouds() {
-    for (const c of clouds) {
-      // parte superior
-      ctx.save();
-      ctx.translate(c.x,0);
-      drawCloudBand(0, c.gapY, c.seed);
-      drawCloudBand(c.gapY + cfg.gap, state.h - (c.gapY + cfg.gap), c.seed+5);
-      ctx.restore();
+  function spawnOrbRow(){
+    const n=4+Math.floor(Math.random()*4);
+    const baseY=gndY()-rand(140, 240);
+    let x=W+80;
+    for(let i=0;i<n;i++){
+      orbs.push({x, y: baseY+Math.sin(i*0.8)*18, r:12, taken:false, t:Math.random()*1000});
+      x+=38;
     }
   }
 
-  // Colisión: aproximamos nubes a dos rectángulos (top/bottom)
-  function checkCollision() {
-    const bx = bird.x, by = bird.y, br = bird.r;
-    // límites pantalla
-    if (by - br < 0 || by + br > state.h) return true;
-    for (const c of clouds) {
-      const topRect = { x:c.x, y:0, w:state.w, h:c.gapY };
-      const botRect = { x:c.x, y:c.gapY + cfg.gap, w:state.w, h:state.h - (c.gapY+cfg.gap) };
-      if (circleRect(bx,by,br, topRect) || circleRect(bx,by,br, botRect)) return true;
+  // Update
+  function update(dt){
+    hue=(hue+0.05)%360;
+    if (gameState!==GAME.PLAY) return;
 
-      // puntuación al pasar el centro del par
-      if (!c.passed && c.x + 40 < bird.x) {
-        c.passed = true;
-        addScore();
-      }
+    // dificultad
+    speed=Math.min(MAX_SPEED, speed+dt*10);
+
+    // héroe
+    hero.vy+=GRAVITY*dt; hero.y+=hero.vy*dt;
+    const floor=gndY()-hero.h/2;
+    if (hero.y>=floor){ hero.y=floor; hero.vy=0; hero.onGround=true; hero.jumps=0; }
+    if (hero.y-hero.h/2<0){ hero.y=hero.h/2; hero.vy=0; }
+
+    // animación
+    if (hero.onGround){ hero.ft+=dt; if (hero.ft>=1/HERO_FPS){ hero.ft=0; hero.frame=(hero.frame+1)%HERO_FRAMES; } }
+    else hero.frame=2; // frame “en aire”
+
+    // meteoros
+    mTimer+=dt; const every=Math.max(0.8,1.35 - score*0.01);
+    if (mTimer>=every){ mTimer=0; spawnMeteor(); }
+    for (const m of meteors){ m.x-=speed*dt; m.rot+=m.speedR*dt; }
+    while (meteors.length && meteors[0].x+meteors[0].w<-60) meteors.shift();
+
+    // orbes
+    oTimer+=dt; if (oTimer>=2.2){ oTimer=0; if (Math.random()<0.75) spawnOrbRow(); }
+    for (const o of orbs){ o.x-=speed*dt; o.t+=dt; }
+    while (orbs.length && orbs[0].x<-60) orbs.shift();
+
+    // colisiones
+    if (hitMeteor()) { die(); return; }
+    collectOrbs();
+  }
+
+  // Colisiones
+  function rectOverlap(ax,ay,aw,ah,bx,by,bw,bh){ return ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by; }
+  function hitMeteor(){
+    const hx=hero.x-hero.w/2, hy=hero.y-hero.h/2;
+    for (const m of meteors){
+      if (rectOverlap(hx,hy,hero.w,hero.h,m.x,m.y,m.w,m.h)) return true;
+      if (!m.passed && m.x+m.w<hero.x){ m.passed=true; addScore(1); }
     }
     return false;
   }
-
-  function circleRect(cx,cy,r,rect){
-    const nx = clamp(cx, rect.x, rect.x+rect.w);
-    const ny = clamp(cy, rect.y, rect.y+rect.h);
-    const dx = cx - nx, dy = cy - ny;
-    return (dx*dx + dy*dy) <= r*r;
-  }
-
-  function addScore(){
-    score++;
-    scoreEl.textContent = score;
-    // ligera subida de dificultad por puntos
-    cfg.speed    = clamp(cfg.speed + 4, cfg.speed, cfg.speedMax);
-    cfg.gap      = Math.max(cfg.minGap, cfg.gap - 1.2);
-    cfg.spawnEvery = Math.max(0.95, cfg.spawnEvery - 0.008);
-    pulseHUD();
-  }
-
-  function pulseHUD(){
-    const hud = document.querySelector('.hud');
-    hud.style.transition='transform .08s ease';
-    hud.style.transform='scale(1.04)';
-    setTimeout(()=>{hud.style.transform='scale(1)';},80);
-  }
-
-  // Entrada: click o touch = salto
-  function jump(){
-    if (gameState === GAME.READY) {
-      startGame();
-      return;
+  function collectOrbs(){
+    for (const o of orbs){
+      if (o.taken) continue;
+      const dx=hero.x - o.x, dy=(hero.y-hero.h*0.25)-o.y;
+      const rr=(Math.min(hero.w,hero.h)*0.35 + o.r);
+      if (dx*dx+dy*dy<=rr*rr){ o.taken=true; addScore(ORB_SCORE); }
     }
-    if (gameState === GAME.DEAD) return;
-    bird.vy = bird.jumpV;
+  }
+  function addScore(v){
+    score+=v; document.getElementById('score').textContent=score;
+    const hud=document.querySelector('.hud'); hud.style.transition='transform .08s'; hud.style.transform='scale(1.04)'; setTimeout(()=>hud.style.transform='scale(1)',80);
   }
 
-  // Bloquear doble tap zoom/scroll
-  ['touchstart','touchmove','gesturestart'].forEach(ev=>{
-    window.addEventListener(ev, e=> e.preventDefault(), {passive:false});
-  });
+  // Render
+  function drawBackground(){
+    // cielo
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,`hsl(${(hue+10)%360},90%,55%)`);
+    g.addColorStop(1,`hsl(${(hue+300)%360},90%,40%)`);
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
 
-  window.addEventListener('mousedown', e=> { if (e.button===0) jump(); });
-  window.addEventListener('touchstart', jump, {passive:false});
-  playBtn.addEventListener('click', ()=> startGame());
-
-  function startGame(){
-    overlay.style.display='none';
-    reset();
-    gameState = GAME.PLAY;
-  }
-
-  function gameOver(){
-    gameState = GAME.DEAD;
-    if (score > best) {
-      best = score;
-      localStorage.setItem('cloudy_best', String(best));
-      bestEl.textContent = best;
+    // estrellas
+    ctx.globalAlpha=0.7;
+    for(let i=0;i<80;i++){
+      const x=(i*97 + Date.now()/40)%W, y=(i*53)%H*0.9;
+      ctx.fillStyle=i%7===0?'#9beaff':'#ffffff';
+      ctx.fillRect(x,y,1.5,1.5);
     }
-    // mostrar overlay con CTA reinicio
-    overlay.innerHTML = `
+    ctx.globalAlpha=1;
+
+    // parallax planetas
+    drawPlanet( W*0.75, H*0.22, 60, '#6ee7ff');
+    drawPlanet( W*0.28, H*0.18, 36, '#a78bfa');
+
+    // suelo lunar
+    ctx.fillStyle='#0f1323';
+    ctx.fillRect(0,gndY(),W,GROUND_H);
+    ctx.fillStyle='rgba(255,255,255,.06)'; ctx.fillRect(0,gndY(),W,2);
+    // cráteres
+    for(let i=0;i<8;i++){
+      const x=(i*W/7 - (Date.now()*0.12)%W);
+      ctx.beginPath(); ctx.ellipse(x, gndY()+GROUND_H*0.6, 30,14,0,0,Math.PI*2);
+      ctx.fillStyle='rgba(0,0,0,.25)'; ctx.fill();
+    }
+  }
+  function drawPlanet(x,y,r,color){
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fillStyle=color; ctx.fill();
+    ctx.beginPath(); ctx.arc(x-r*0.3,y-r*0.3,r*0.6,0,Math.PI*2); ctx.fillStyle='rgba(255,255,255,.25)'; ctx.fill();
+  }
+
+  function drawMeteors(){
+    for(const m of meteors){
+      ctx.save();
+      ctx.translate(m.x+m.w/2, m.y+m.h/2);
+      ctx.rotate(m.rot);
+      const grd=ctx.createLinearGradient(-m.w/2, -m.h/2, m.w/2, m.h/2);
+      grd.addColorStop(0,'#ff8a65'); grd.addColorStop(1,'#f44336');
+      ctx.fillStyle=grd;
+      ctx.beginPath();
+      ctx.roundRect?.(-m.w/2,-m.h/2,m.w,m.h,12);
+      if(!ctx.roundRect){ ctx.fillRect(-m.w/2,-m.h/2,m.w,m.h); } else { ctx.fill(); }
+      ctx.restore();
+    }
+  }
+  function drawOrbs(){
+    for(const o of orbs){
+      if (o.taken) continue;
+      const pulse = 1 + Math.sin(o.t*6)*0.08;
+      ctx.beginPath(); ctx.arc(o.x,o.y,o.r*pulse,0,Math.PI*2);
+      ctx.fillStyle='#00e5ff'; ctx.fill();
+      ctx.beginPath(); ctx.arc(o.x,o.y,o.r*0.55,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,.45)'; ctx.fill();
+    }
+  }
+  function drawHero(){
+    ctx.save();
+    ctx.translate(hero.x,hero.y);
+    ctx.translate(-hero.w/2,-hero.h/2);
+    if (heroImg.complete && heroImg.naturalWidth){
+      const fw=heroImg.width/Math.max(1,HERO_FRAMES), fh=heroImg.height;
+      ctx.drawImage(heroImg, Math.floor(hero.frame)*fw, 0, fw, fh, 0, 0, hero.w, hero.h);
+    } else {
+      // placeholder si aún no está el sprite
+      ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,hero.w,hero.h);
+      ctx.fillStyle='#00e5ff'; ctx.fillRect(hero.w*0.22, hero.h*0.22, hero.w*0.56, hero.h*0.38);
+      ctx.fillStyle='#f0f'; ctx.fillRect(hero.w*0.15, hero.h*0.82, hero.w*0.25, hero.h*0.16);
+      ctx.fillRect(hero.w*0.6,  hero.h*0.82, hero.w*0.25, hero.h*0.16);
+    }
+    ctx.restore();
+  }
+
+  function die(){
+    gameState=GAME.DEAD;
+    if (score>best){ best=score; localStorage.setItem('cosmos_best', best); }
+    document.getElementById('best').textContent=best;
+    ovl.innerHTML=`
       <div>
-        <h1 style="margin:0 0 8px;font-size:36px">🚫 ¡Has tocado una nube!</h1>
-        <div class="small" style="margin-bottom:6px">Puntuación: <b>${score}</b> · Récord: <b>${best}</b></div>
-        ${ medalHTML(score) }
-        <button class="btn" id="again">Reintentar</button><br/>
-        <div class="small" style="margin-top:10px;opacity:.8">Consejo: haz saltos cortos y rítmicos; evita sobrecorregir.</div>
-      </div>
-    `;
-    overlay.style.display='grid';
+        <h1 style="margin:0 0 8px">💥 ¡Impacto!</h1>
+        <div class="small">Puntos: <b>${score}</b> · Récord: <b>${best}</b></div>
+        <button id="again" class="btn">Reintentar</button>
+        <div class="small" style="margin-top:10px;opacity:.8">Tip: reserva el doble salto para meteoros encadenados.</div>
+      </div>`;
+    ovl.style.display='grid';
     document.getElementById('again').addEventListener('click', ()=>{
-      overlay.innerHTML = `
+      ovl.innerHTML=`
         <div>
-          <h1 style="margin:0 0 8px;font-size:36px">🌈 Cloudy Bird</h1>
-          <div class="small">Toque o click para saltar. Evita las nubes.</div>
-          <button class="btn" id="playBtn">Jugar</button>
-        </div>
-      `;
-      document.getElementById('playBtn').addEventListener('click', ()=> startGame());
+          <h1 style="margin:0 0 8px">🚀 COSMOS JUMP</h1>
+          <div class="small">Click/Tap o <kbd>Espacio</kbd> para saltar.</div>
+          <button id="play" class="btn">Jugar</button>
+        </div>`;
+      document.getElementById('play').addEventListener('click', start);
     });
   }
 
-  function medalHTML(s){
-    if (s>=40) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#ffd700,#ffb300)">🥇 Oro · Crack</div>`;
-    if (s>=25) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#c0c0c0,#a0a0a0)">🥈 Plata · Muy bien</div>`;
-    if (s>=10) return `<div class="badge" style="margin:8px auto;display:inline-block;background:linear-gradient(135deg,#cd7f32,#9c5e24)">🥉 Bronce · Sigue!</div>`;
-    return `<div class="badge" style="margin:8px auto;display:inline-block">🎯 Calentando</div>`;
-  }
-
-  // Bucle principal
-  let last = performance.now();
+  // Loop
+  let last=performance.now();
   function loop(now){
-    const dt = Math.min(0.033, (now - last)/1000); // cap 30ms
-    last = now;
-
-    drawSky();
-
-    if (gameState === GAME.PLAY) {
-      // física pájaro
-      bird.vy += bird.gravity * dt;
-      bird.y  += bird.vy * dt;
-      bird.tilt = lerp(bird.tilt, clamp(bird.vy/800, -0.5, 0.7), 0.2);
-
-      updateClouds(dt);
-
-      if (checkCollision()) gameOver();
-    }
-
-    drawClouds();
-    drawBird(dt);
-
+    const dt=Math.min(0.033, (now-last)/1000); last=now;
+    drawBackground();
+    update(dt);
+    drawMeteors();
+    drawOrbs();
+    drawHero();
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
 
-  // Arranque
-  reset();
+  // Utilidades
+  function rand(a,b){ return a+Math.random()*(b-a); }
+  ['touchmove','gesturestart'].forEach(ev=>addEventListener(ev, e=>e.preventDefault(), {passive:false}));
 
+  reset(); // arranque
 })();
 </script>
 </body>
